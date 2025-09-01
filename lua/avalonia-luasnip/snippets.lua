@@ -6,8 +6,13 @@ local fmt = require('luasnip.extras.fmt').fmt --[[@as fun(body: string, nodes: a
 local rep = require('luasnip.extras').rep --[[@as fun(idx: integer)]]
 local oneof = ls.choice_node
 local text = ls.text_node
+local dyn = ls.dynamic_node
+local sn = ls.snippet_node
 
-local function classname()
+---@param ...('classname' | 'modifiers')
+---@return { classname: string, modifiers: string[] }?
+local function classinfo(...)
+  local types = { ... }
   local cursor_node = vim.treesitter.get_node { ignore_injections = false }
   if not cursor_node then return nil end
 
@@ -18,16 +23,37 @@ local function classname()
 
   if not parent then return nil end
 
-  local query = vim.treesitter.query.parse(
-    'c_sharp',
-    [[
-  (class_declaration
-    name: (identifier) @class_name)
-  ]]
-  )
-  for _, capture in query:iter_captures(parent, 0) do
-    return vim.treesitter.get_node_text(capture, 0)
+  local classname
+  if vim.list_contains(types, 'classname') then
+    local classname_query = vim.treesitter.query.parse(
+      'c_sharp',
+      [[
+      (class_declaration
+      name: (identifier) @class_name)
+      ]]
+    )
+
+    for _, capture in classname_query:iter_captures(parent, 0) do
+      classname = vim.treesitter.get_node_text(capture, 0)
+      break
+    end
   end
+
+  local modifiers = {}
+  if vim.list_contains(types, 'modifiers') then
+    local modifier_query = vim.treesitter.query.parse(
+      'c_sharp',
+      [[
+      (class_declaration
+      (modifier)* @modifiers)
+      ]]
+    )
+    for _, capture in modifier_query:iter_captures(parent, 0) do
+      table.insert(modifiers, vim.treesitter.get_node_text(capture, 0))
+    end
+  end
+
+  return { classname = classname, modifiers = modifiers }
 end
 
 local function pascal2camel(name)
@@ -49,20 +75,20 @@ return {
     'directProperty',
     fmt(
       [[
-    private {propertyType} _{};
+    private {TValue} _{};
 
-    public static readonly DirectProperty<{controlType}, {propertyType}> {}Property = AvaloniaProperty.RegisterDirect<{controlType}, {propertyType}>(
+    public static readonly DirectProperty<{TOwner}, {TValue}> {}Property = AvaloniaProperty.RegisterDirect<{TOwner}, {TValue}>(
         nameof({}), o => o.{}, (o, v) => o.{} = v);
 
-    public {propertyType} {}
+    public {TValue} {}
     {{
         get => _{};
         set => SetAndRaise({}Property, ref _{}, value);
     }}
       ]],
       {
-        propertyType = ins(2, 'propertyType'),
-        controlType = fn(function() return classname() or 'controlType' end),
+        TValue = ins(2, 'TValue'),
+        TOwner = fn(function() return classinfo('classname').classname or 'TOwner' end),
         fn(function(args) return pascal2camel(args[1][1] or '') end, { 1 }),
         ins(1, 'PropertyName'),
         rep(1),
@@ -80,10 +106,10 @@ return {
     'styledProperty',
     fmt(
       [[
-    public static readonly StyledProperty<{propertyType}> {propertyName}Property = AvaloniaProperty.Register<{controlType}, {propertyType}>(
+    public static readonly StyledProperty<{TValue}> {propertyName}Property = AvaloniaProperty.Register<{TOwner}, {TValue}>(
         nameof({propertyName}));
 
-    public {propertyType} {propertyName}
+    public {TValue} {propertyName}
     {{
         get => GetValue({propertyName}Property);
         set => SetValue({propertyName}Property, value);
@@ -91,39 +117,72 @@ return {
   ]],
       {
         propertyName = ins(1, 'propertyName'),
-        propertyType = ins(2, 'propertyType'),
-        controlType = fn(function() return classname() or 'controlType' end),
+        TValue = ins(2, 'TValue'),
+        TOwner = fn(function() return classinfo('classname').classname or 'TOwner' end),
       },
       { repeat_duplicates = true }
     )
   ),
   snip(
     'attachedProperty',
-    fmt(
-      [[
-    public static readonly AttachedProperty<{propertyType}> {propertyName}Property =
-      AvaloniaProperty.RegisterAttached<{controlType}, {targetType}, {propertyType}>("{propertyName}");
+    dyn(1, function()
+      if vim.list_contains(classinfo('modifiers').modifiers, 'static') then
+        return sn(
+          nil,
+          fmt(
+            [[
+            public static readonly AttachedProperty<{TValue}> {propertyName}Property =
+            AvaloniaProperty.RegisterAttached<{THost}, {TValue}>("{propertyName}", typeof({TOwner}));
 
-    public static void Set{propertyName}({targetType} obj, {propertyType} value) => obj.SetValue({propertyName}Property, value);
-    public static {propertyType} Get{propertyName}({targetType} obj) => obj.GetValue({propertyName}Property);
-  ]],
-      {
-        propertyName = ins(1, 'propertyName'),
-        propertyType = ins(2, 'propertyType'),
-        controlType = fn(function() return classname() or 'controlType' end),
-        targetType = ins(3, 'targetType'),
-      },
-      {
-        repeat_duplicates = true,
-      }
-    )
+            public static void Set{propertyName}({THost} host, {TValue} value) => host.SetValue({propertyName}Property, value);
+            public static {TValue} Get{propertyName}({THost} host) => host.GetValue({propertyName}Property);
+            ]],
+            {
+              propertyName = ins(1, 'propertyName'),
+              TValue = ins(2, 'TValue'),
+              TOwner = fn(
+                function() return classinfo('classname').classname or 'TOwner' end
+              ),
+              THost = ins(3, 'THost'),
+            },
+            {
+              repeat_duplicates = true,
+            }
+          )
+        )
+      else
+        return sn(
+          nil,
+          fmt(
+            [[
+            public static readonly AttachedProperty<{TValue}> {propertyName}Property =
+            AvaloniaProperty.RegisterAttached<{TOwner}, {THost}, {TValue}>("{propertyName}");
+
+            public static void Set{propertyName}({THost} host, {TValue} value) => host.SetValue({propertyName}Property, value);
+            public static {TValue} Get{propertyName}({THost} host) => host.GetValue({propertyName}Property);
+            ]],
+            {
+              propertyName = ins(1, 'propertyName'),
+              TValue = ins(2, 'TValue'),
+              TOwner = fn(
+                function() return classinfo('classname').classname or 'TOwner' end
+              ),
+              THost = ins(3, 'THost'),
+            },
+            {
+              repeat_duplicates = true,
+            }
+          )
+        )
+      end
+    end)
   ),
   snip(
     'routedEvent',
     fmt(
       [[
     public static readonly RoutedEvent<RoutedEventArgs> {eventName}Event =
-        RoutedEvent.Register<{controlType}, RoutedEventArgs>(nameof({eventName}), RoutingStrategies.{strategy});
+        RoutedEvent.Register<{TOwner}, RoutedEventArgs>(nameof({eventName}), RoutingStrategies.{strategy});
 
     public event EventHandler<RoutedEventArgs> {eventName}
     {{
@@ -140,7 +199,7 @@ return {
       {
         eventName = ins(1, 'eventName'),
         strategy = oneof(2, { text('Direct'), text('Tunnel'), text('Bubble') }),
-        controlType = fn(function() return classname() or 'controlType' end),
+        TOwner = fn(function() return classinfo('classname').classname or 'TOwner' end),
       },
       { repeat_duplicates = true }
     )
