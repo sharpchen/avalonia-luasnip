@@ -9,10 +9,8 @@ local text = ls.text_node
 local dyn = ls.dynamic_node
 local sn = ls.snippet_node
 
----@param ...('classname' | 'modifiers')
 ---@return { classname: string, modifiers: string[] }?
-local function classinfo(...)
-  local types = { ... }
+local function classinfo()
   local cursor_node = vim.treesitter.get_node { ignore_injections = false }
   if not cursor_node then return nil end
 
@@ -24,31 +22,21 @@ local function classinfo(...)
   if not parent then return nil end
 
   local classname
-  if vim.list_contains(types, 'classname') then
-    local classname_query = vim.treesitter.query.parse(
-      'c_sharp',
-      [[
+  local modifiers = {}
+  local query = vim.treesitter.query.parse(
+    'c_sharp',
+    [[
       (class_declaration
+      (modifier)* @modifiers
       name: (identifier) @class_name)
       ]]
-    )
+  )
 
-    for _, capture in classname_query:iter_captures(parent, 0) do
+  for id, capture in query:iter_captures(parent, 0) do
+    if query.captures[id] == 'class_name' then
       classname = vim.treesitter.get_node_text(capture, 0)
-      break
     end
-  end
-
-  local modifiers = {}
-  if vim.list_contains(types, 'modifiers') then
-    local modifier_query = vim.treesitter.query.parse(
-      'c_sharp',
-      [[
-      (class_declaration
-      (modifier)* @modifiers)
-      ]]
-    )
-    for _, capture in modifier_query:iter_captures(parent, 0) do
+    if query.captures[id] == 'modifiers' then
       table.insert(modifiers, vim.treesitter.get_node_text(capture, 0))
     end
   end
@@ -88,7 +76,7 @@ return {
       ]],
       {
         TValue = ins(2, 'TValue'),
-        TOwner = fn(function() return classinfo('classname').classname or 'TOwner' end),
+        TOwner = fn(function() return classinfo().classname or 'TOwner' end),
         fn(function(args) return pascal2camel(args[1][1] or '') end, { 1 }),
         ins(1, 'PropertyName'),
         rep(1),
@@ -118,7 +106,7 @@ return {
       {
         propertyName = ins(1, 'propertyName'),
         TValue = ins(2, 'TValue'),
-        TOwner = fn(function() return classinfo('classname').classname or 'TOwner' end),
+        TOwner = fn(function() return classinfo().classname or 'TOwner' end),
       },
       { repeat_duplicates = true }
     )
@@ -126,13 +114,13 @@ return {
   snip(
     'attachedProperty',
     dyn(1, function()
-      if vim.list_contains(classinfo('modifiers').modifiers, 'static') then
+      if vim.list_contains(classinfo().modifiers, 'static') then
         return sn(
           nil,
           fmt(
             [[
             public static readonly AttachedProperty<{TValue}> {propertyName}Property =
-            AvaloniaProperty.RegisterAttached<{THost}, {TValue}>("{propertyName}", typeof({TOwner}));
+                AvaloniaProperty.RegisterAttached<{THost}, {TValue}>("{propertyName}", typeof({TOwner}));
 
             public static void Set{propertyName}({THost} host, {TValue} value) => host.SetValue({propertyName}Property, value);
             public static {TValue} Get{propertyName}({THost} host) => host.GetValue({propertyName}Property);
@@ -140,9 +128,7 @@ return {
             {
               propertyName = ins(1, 'propertyName'),
               TValue = ins(2, 'TValue'),
-              TOwner = fn(
-                function() return classinfo('classname').classname or 'TOwner' end
-              ),
+              TOwner = fn(function() return classinfo().classname or 'TOwner' end),
               THost = ins(3, 'THost'),
             },
             {
@@ -156,7 +142,7 @@ return {
           fmt(
             [[
             public static readonly AttachedProperty<{TValue}> {propertyName}Property =
-            AvaloniaProperty.RegisterAttached<{TOwner}, {THost}, {TValue}>("{propertyName}");
+                AvaloniaProperty.RegisterAttached<{TOwner}, {THost}, {TValue}>("{propertyName}");
 
             public static void Set{propertyName}({THost} host, {TValue} value) => host.SetValue({propertyName}Property, value);
             public static {TValue} Get{propertyName}({THost} host) => host.GetValue({propertyName}Property);
@@ -164,9 +150,7 @@ return {
             {
               propertyName = ins(1, 'propertyName'),
               TValue = ins(2, 'TValue'),
-              TOwner = fn(
-                function() return classinfo('classname').classname or 'TOwner' end
-              ),
+              TOwner = fn(function() return classinfo().classname or 'TOwner' end),
               THost = ins(3, 'THost'),
             },
             {
@@ -199,7 +183,7 @@ return {
       {
         eventName = ins(1, 'eventName'),
         strategy = oneof(2, { text('Direct'), text('Tunnel'), text('Bubble') }),
-        TOwner = fn(function() return classinfo('classname').classname or 'TOwner' end),
+        TOwner = fn(function() return classinfo().classname or 'TOwner' end),
       },
       { repeat_duplicates = true }
     )
