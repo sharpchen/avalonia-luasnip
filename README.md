@@ -1,7 +1,7 @@
 ## Prerequisite
 
 - `L3MON4D3/LuaSnip`
-- `tree-sitter-csharp` parser installed
+- `tree-sitter-c_sharp` parser installed
 
 ## Setup
 
